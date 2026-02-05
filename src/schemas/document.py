@@ -65,9 +65,33 @@ class DocumentDetailResponse(BaseModel):
     status: str
     error_message: Optional[str] = None
     chunk_count: int
+    has_raw_text: bool = False
+    has_file_bytes: bool = False
     chunks: list[DocumentChunkResponse] = []
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        """Custom validation to handle raw_text and file_bytes flags."""
+        if hasattr(obj, "raw_text"):
+            kwargs.setdefault("context", {})
+        data = {
+            "id": obj.id,
+            "filename": obj.filename,
+            "original_filename": obj.original_filename,
+            "content_type": obj.content_type,
+            "file_size": obj.file_size,
+            "status": obj.status,
+            "error_message": obj.error_message,
+            "chunk_count": obj.chunk_count,
+            "has_raw_text": obj.raw_text is not None if hasattr(obj, "raw_text") else False,
+            "has_file_bytes": obj.file_bytes is not None if hasattr(obj, "file_bytes") else False,
+            "chunks": [DocumentChunkResponse.model_validate(c) for c in obj.chunks] if hasattr(obj, "chunks") and obj.chunks else [],
+            "created_at": obj.created_at,
+            "updated_at": obj.updated_at,
+        }
+        return cls(**data)

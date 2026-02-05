@@ -1,12 +1,12 @@
-"""Retrieval service for vector search."""
+"""Retrieval service with pgvector similarity search and reranking."""
 
 import logging
 from dataclasses import dataclass
 from typing import Optional
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
-from sqlalchemy import select
+from openai import AsyncOpenAI
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
 from src.database import get_db_context
@@ -27,109 +27,154 @@ class RetrievalResult:
     chunk_index: int
     page_number: Optional[int]
     relevance_score: float
-    chroma_id: str
 
 
 class RetrievalService:
-    """Service for retrieving relevant document chunks."""
+    """Service for retrieving relevant document chunks using pgvector."""
 
     def __init__(self):
         self.top_k = settings.top_k_retrieval
+        self.rerank_top_k = settings.rerank_top_k
+        self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._reranker = None
 
-        # Initialize ChromaDB
-        self.chroma_client = chromadb.PersistentClient(
-            path=settings.chroma_persist_dir,
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
-        self.collection = self.chroma_client.get_or_create_collection(
-            name=settings.chroma_collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
-
-        # Initialize embedding function
-        self._embedding_function = None
-
-    def _get_embedding_function(self):
-        """Lazy load embedding function."""
-        if self._embedding_function is None:
-            from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
-            self._embedding_function = OpenAIEmbeddingFunction(
-                api_key=settings.openai_api_key,
-                model_name=settings.embedding_model,
-            )
-        return self._embedding_function
+    def _get_reranker(self):
+        """Lazy load the reranker model."""
+        if self._reranker is None:
+            try:
+                from sentence_transformers import CrossEncoder
+                self._reranker = CrossEncoder(settings.rerank_model)
+                logger.info(f"Loaded reranker model: {settings.rerank_model}")
+            except Exception as e:
+                logger.warning(f"Failed to load reranker: {e}. Reranking disabled.")
+                self._reranker = False  # Mark as unavailable
+        return self._reranker if self._reranker else None
 
     async def search(
         self,
         query: str,
         top_k: Optional[int] = None,
         document_ids: Optional[list[int]] = None,
-        min_score: float = 0.0,
+        rerank: bool = True,
     ) -> list[RetrievalResult]:
-        """Search for relevant document chunks."""
+        """Search for relevant document chunks using pgvector."""
         k = top_k or self.top_k
 
-        # Build where filter
-        where_filter = None
-        if document_ids:
-            where_filter = {"document_id": {"$in": document_ids}}
+        # Generate query embedding
+        query_embedding = await self._generate_embedding(query)
 
-        # Get query embedding
-        embedding_fn = self._get_embedding_function()
-        query_embedding = embedding_fn([query])[0]
+        async with get_db_context() as db:
+            # Build pgvector similarity search query
+            # Using cosine distance: 1 - (embedding <=> query_embedding)
+            results = await self._vector_search(
+                db, query_embedding, k, document_ids
+            )
 
-        # Search ChromaDB
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=k,
-            where=where_filter,
-            include=["documents", "metadatas", "distances"],
-        )
-
-        if not results or not results["ids"] or not results["ids"][0]:
+        if not results:
             return []
 
-        # Convert to RetrievalResult objects
-        retrieval_results = []
+        # Rerank if enabled and reranker is available
+        if rerank and len(results) > 1:
+            reranker = self._get_reranker()
+            if reranker:
+                results = self._rerank_results(query, results)
 
-        for i, chroma_id in enumerate(results["ids"][0]):
-            # ChromaDB returns distances (lower is better), convert to similarity score
-            distance = results["distances"][0][i] if results["distances"] else 0
-            # Cosine distance to similarity: similarity = 1 - distance
-            score = 1 - distance
+        # Return top results after reranking
+        return results[:self.rerank_top_k if rerank else k]
 
-            if score < min_score:
-                continue
+    async def _vector_search(
+        self,
+        db: AsyncSession,
+        query_embedding: list[float],
+        top_k: int,
+        document_ids: Optional[list[int]] = None,
+    ) -> list[RetrievalResult]:
+        """Perform pgvector similarity search."""
+        # Build the query with cosine similarity
+        # pgvector uses <=> for cosine distance, so similarity = 1 - distance
+        embedding_str = f"[{','.join(str(x) for x in query_embedding)}]"
 
-            metadata = results["metadatas"][0][i] if results["metadatas"] else {}
-            content = results["documents"][0][i] if results["documents"] else ""
+        base_query = """
+            SELECT
+                dc.id as chunk_id,
+                dc.document_id,
+                d.original_filename as document_name,
+                dc.content,
+                dc.chunk_index,
+                dc.page_number,
+                1 - (dc.embedding <=> :embedding::vector) as similarity
+            FROM document_chunks dc
+            JOIN documents d ON dc.document_id = d.id
+            WHERE dc.embedding IS NOT NULL
+        """
 
-            # Get chunk ID from database
-            chunk_id = await self._get_chunk_id(chroma_id)
+        if document_ids:
+            base_query += " AND dc.document_id = ANY(:doc_ids)"
 
-            retrieval_results.append(
-                RetrievalResult(
-                    chunk_id=chunk_id or 0,
-                    document_id=metadata.get("document_id", 0),
-                    document_name=metadata.get("document_name", "Unknown"),
-                    content=content,
-                    chunk_index=metadata.get("chunk_index", 0),
-                    page_number=metadata.get("page_number") if metadata.get("page_number", -1) != -1 else None,
-                    relevance_score=score,
-                    chroma_id=chroma_id,
-                )
+        base_query += """
+            ORDER BY dc.embedding <=> :embedding::vector
+            LIMIT :limit
+        """
+
+        params = {"embedding": embedding_str, "limit": top_k}
+        if document_ids:
+            params["doc_ids"] = document_ids
+
+        result = await db.execute(text(base_query), params)
+        rows = result.fetchall()
+
+        return [
+            RetrievalResult(
+                chunk_id=row.chunk_id,
+                document_id=row.document_id,
+                document_name=row.document_name,
+                content=row.content,
+                chunk_index=row.chunk_index,
+                page_number=row.page_number,
+                relevance_score=float(row.similarity) if row.similarity else 0.0,
             )
+            for row in rows
+        ]
 
-        return retrieval_results
+    def _rerank_results(
+        self,
+        query: str,
+        results: list[RetrievalResult],
+    ) -> list[RetrievalResult]:
+        """Rerank results using cross-encoder."""
+        reranker = self._get_reranker()
+        if not reranker:
+            return results
 
-    async def _get_chunk_id(self, chroma_id: str) -> Optional[int]:
-        """Get database chunk ID from ChromaDB ID."""
-        async with get_db_context() as db:
-            result = await db.execute(
-                select(DocumentChunk.id).where(DocumentChunk.chroma_id == chroma_id)
+        # Prepare pairs for reranking
+        pairs = [(query, r.content) for r in results]
+
+        # Get reranking scores
+        scores = reranker.predict(pairs)
+
+        # Update scores and sort
+        for i, result in enumerate(results):
+            # Combine original score with rerank score (weighted)
+            original_weight = 0.3
+            rerank_weight = 0.7
+            combined_score = (
+                original_weight * result.relevance_score +
+                rerank_weight * float(scores[i])
             )
-            row = result.scalar_one_or_none()
-            return row
+            result.relevance_score = combined_score
+
+        # Sort by combined score
+        results.sort(key=lambda x: x.relevance_score, reverse=True)
+
+        return results
+
+    async def _generate_embedding(self, text: str) -> list[float]:
+        """Generate embedding for a single text."""
+        response = await self.openai_client.embeddings.create(
+            model=settings.embedding_model,
+            input=text,
+        )
+        return response.data[0].embedding
 
     async def get_chunk_by_id(self, chunk_id: int) -> Optional[dict]:
         """Get a specific chunk by its database ID."""
@@ -174,10 +219,24 @@ class RetrievalService:
                 for chunk in chunks
             ]
 
-    def get_collection_stats(self) -> dict:
-        """Get statistics about the vector collection."""
-        count = self.collection.count()
-        return {
-            "total_chunks": count,
-            "collection_name": settings.chroma_collection_name,
-        }
+    async def get_stats(self) -> dict:
+        """Get statistics about the vector store."""
+        async with get_db_context() as db:
+            # Count total chunks
+            result = await db.execute(
+                text("SELECT COUNT(*) FROM document_chunks WHERE embedding IS NOT NULL")
+            )
+            chunk_count = result.scalar() or 0
+
+            # Count documents
+            result = await db.execute(
+                text("SELECT COUNT(*) FROM documents WHERE status = 'completed'")
+            )
+            doc_count = result.scalar() or 0
+
+            return {
+                "total_chunks": chunk_count,
+                "total_documents": doc_count,
+                "embedding_dimensions": settings.embedding_dimensions,
+                "reranking_enabled": self._get_reranker() is not None,
+            }

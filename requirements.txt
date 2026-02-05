@@ -3,13 +3,11 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
-# Database
+# Database - Postgres + pgvector
 sqlalchemy>=2.0.25
-aiosqlite>=0.19.0
+asyncpg>=0.29.0
+pgvector>=0.2.4
 greenlet>=3.0.0
-
-# Vector Store
-chromadb>=0.4.22
 
 # LLM & Orchestration
 openai>=1.12.0
@@ -18,10 +16,12 @@ langchain-openai>=0.0.5
 langchain-community>=0.0.17
 tiktoken>=0.5.2
 
+# Reranking
+sentence-transformers>=2.3.0
+
 # Document Processing
 pypdf>=4.0.1
 python-docx>=1.1.0
-unstructured>=0.12.0
 
 # UI
 gradio>=4.16.0
@@ -36,6 +36,11 @@ httpx>=0.26.0
 numpy>=1.26.3
 pandas>=2.2.0
 scikit-learn>=1.4.0
+
+# Observability
+opentelemetry-api>=1.22.0
+opentelemetry-sdk>=1.22.0
+opentelemetry-instrumentation-fastapi>=0.43b0
 
 # Development
 pytest>=8.0.0

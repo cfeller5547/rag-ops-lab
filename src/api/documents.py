@@ -1,13 +1,10 @@
 """Document management API endpoints."""
 
 import logging
-import os
-import shutil
 import uuid
-from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -63,6 +60,7 @@ async def list_documents(
 
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentResponse:
@@ -77,22 +75,19 @@ async def upload_document(
             detail=f"Unsupported file type: {content_type}. Allowed: {allowed_types}",
         )
 
-    # Generate unique filename
-    file_ext = Path(file.filename or "document").suffix
-    unique_filename = f"{uuid.uuid4()}{file_ext}"
-    file_path = Path(settings.upload_dir) / unique_filename
+    # Read file bytes
+    file_bytes = await file.read()
+    file_size = len(file_bytes)
 
-    # Save file
-    try:
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        file_size = os.path.getsize(file_path)
-    except Exception as e:
-        logger.error(f"Failed to save file: {e}")
+    # Check file size
+    if file_size > settings.max_file_size_bytes:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to save uploaded file",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Maximum size: {settings.max_file_size_mb}MB",
         )
+
+    # Generate unique filename
+    unique_filename = f"{uuid.uuid4()}"
 
     # Create document record
     document = Document(
@@ -100,24 +95,22 @@ async def upload_document(
         original_filename=file.filename or "document",
         content_type=content_type,
         file_size=file_size,
-        file_path=str(file_path),
+        file_bytes=file_bytes if settings.store_raw_files else None,
         status="pending",
     )
     db.add(document)
     await db.commit()
     await db.refresh(document)
 
-    # Process document asynchronously (in background)
-    try:
-        ingestion_service = IngestionService()
-        await ingestion_service.process_document(document.id)
-    except Exception as e:
-        logger.error(f"Failed to process document: {e}")
-        document.status = "failed"
-        document.error_message = str(e)
-        await db.commit()
+    # Process document in background
+    ingestion_service = IngestionService()
+    background_tasks.add_task(
+        ingestion_service.process_document_from_bytes,
+        document.id,
+        file_bytes,
+        content_type,
+    )
 
-    await db.refresh(document)
     return DocumentResponse.model_validate(document)
 
 
@@ -161,20 +154,6 @@ async def delete_document(
             detail=f"Document {document_id} not found",
         )
 
-    # Delete file from disk
-    try:
-        if os.path.exists(document.file_path):
-            os.remove(document.file_path)
-    except Exception as e:
-        logger.warning(f"Failed to delete file {document.file_path}: {e}")
-
-    # Delete from vector store
-    try:
-        ingestion_service = IngestionService()
-        await ingestion_service.delete_document_chunks(document_id)
-    except Exception as e:
-        logger.warning(f"Failed to delete chunks from vector store: {e}")
-
     # Delete from database (cascades to chunks)
     await db.delete(document)
     await db.commit()
@@ -183,6 +162,7 @@ async def delete_document(
 @router.post("/{document_id}/reprocess", response_model=DocumentResponse)
 async def reprocess_document(
     document_id: int,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ) -> DocumentResponse:
     """Reprocess a document (re-chunk and re-embed)."""
@@ -197,20 +177,45 @@ async def reprocess_document(
             detail=f"Document {document_id} not found",
         )
 
+    if not document.raw_text and not document.file_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No stored content available for reprocessing",
+        )
+
     # Reset status
     document.status = "pending"
     document.error_message = None
     await db.commit()
 
-    # Process document
-    try:
-        ingestion_service = IngestionService()
-        await ingestion_service.process_document(document.id)
-    except Exception as e:
-        logger.error(f"Failed to reprocess document: {e}")
-        document.status = "failed"
-        document.error_message = str(e)
-        await db.commit()
+    # Process document in background
+    ingestion_service = IngestionService()
+    background_tasks.add_task(ingestion_service.reprocess_document, document.id)
 
     await db.refresh(document)
     return DocumentResponse.model_validate(document)
+
+
+@router.get("/{document_id}/raw")
+async def get_document_raw_text(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get the raw extracted text of a document."""
+    result = await db.execute(
+        select(Document).where(Document.id == document_id)
+    )
+    document = result.scalar_one_or_none()
+
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document {document_id} not found",
+        )
+
+    return {
+        "document_id": document.id,
+        "filename": document.original_filename,
+        "raw_text": document.raw_text,
+        "has_file_bytes": document.file_bytes is not None,
+    }

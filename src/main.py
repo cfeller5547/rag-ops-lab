@@ -27,10 +27,15 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     logger.info("Starting RAGOps Lab...")
-    settings.ensure_directories()
+    logger.info(f"Database: Postgres + pgvector")
+    logger.info(f"Embedding model: {settings.embedding_model}")
+    logger.info(f"Reranking model: {settings.rerank_model}")
+
     await init_db()
-    logger.info("Database initialized")
+    logger.info("Database initialized with pgvector extension")
+
     yield
+
     # Shutdown
     logger.info("Shutting down RAGOps Lab...")
 
@@ -59,14 +64,31 @@ app.include_router(api_router, prefix="/api")
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return JSONResponse(
-        content={
-            "status": "healthy",
-            "version": "0.1.0",
-            "database": "connected",
-            "vector_store": "connected",
-        }
-    )
+    from src.services.retrieval import RetrievalService
+
+    try:
+        retrieval = RetrievalService()
+        stats = await retrieval.get_stats()
+
+        return JSONResponse(
+            content={
+                "status": "healthy",
+                "version": "0.1.0",
+                "database": "postgres+pgvector",
+                "total_documents": stats["total_documents"],
+                "total_chunks": stats["total_chunks"],
+                "reranking_enabled": stats["reranking_enabled"],
+            }
+        )
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "error": str(e),
+            }
+        )
 
 
 @app.get("/")

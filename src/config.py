@@ -1,7 +1,6 @@
 """Application configuration using Pydantic Settings."""
 
 from functools import lru_cache
-from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,25 +19,31 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4-turbo-preview"
     embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
 
-    # Database
-    database_url: str = "sqlite:///./data/db.sqlite"
-
-    # Vector Store
-    chroma_persist_dir: str = "./data/chroma"
-    chroma_collection_name: str = "ragops_documents"
+    # Database - Postgres
+    database_url: str = "postgresql+asyncpg://localhost/ragops"
 
     # File Storage
-    upload_dir: str = "./data/uploads"
+    max_file_size_mb: int = 10
+    store_raw_files: bool = True
 
     # RAG Settings
     chunk_size: int = 512
     chunk_overlap: int = 50
-    top_k_retrieval: int = 5
+    top_k_retrieval: int = 10
+    rerank_top_k: int = 5
+
+    # Reranking
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
     # Evaluation Settings
     eval_batch_size: int = 10
     eval_timeout_seconds: int = 30
+
+    # Observability
+    enable_telemetry: bool = True
+    otel_service_name: str = "ragops-lab"
 
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -47,18 +52,13 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
-    def ensure_directories(self) -> None:
-        """Create required directories if they don't exist."""
-        Path(self.upload_dir).mkdir(parents=True, exist_ok=True)
-        Path(self.chroma_persist_dir).mkdir(parents=True, exist_ok=True)
-        # Ensure database directory exists
-        db_path = self.database_url.replace("sqlite:///", "")
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    @property
+    def max_file_size_bytes(self) -> int:
+        """Get max file size in bytes."""
+        return self.max_file_size_mb * 1024 * 1024
 
 
 @lru_cache
 def get_settings() -> Settings:
     """Get cached settings instance."""
-    settings = Settings()
-    settings.ensure_directories()
-    return settings
+    return Settings()

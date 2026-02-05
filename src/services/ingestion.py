@@ -1,14 +1,13 @@
-"""Document ingestion service - parsing, chunking, and embedding."""
+"""Document ingestion service - parsing, chunking, and embedding with pgvector."""
 
+import io
 import logging
 import re
-import uuid
 from pathlib import Path
 from typing import Optional
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
-from sqlalchemy import select
+from openai import AsyncOpenAI
+from sqlalchemy import select, delete
 
 from src.config import get_settings
 from src.database import get_db_context
@@ -19,37 +18,15 @@ settings = get_settings()
 
 
 class IngestionService:
-    """Service for ingesting and processing documents."""
+    """Service for ingesting and processing documents into pgvector."""
 
     def __init__(self):
         self.chunk_size = settings.chunk_size
         self.chunk_overlap = settings.chunk_overlap
-
-        # Initialize ChromaDB
-        self.chroma_client = chromadb.PersistentClient(
-            path=settings.chroma_persist_dir,
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
-        self.collection = self.chroma_client.get_or_create_collection(
-            name=settings.chroma_collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
-
-        # Initialize embedding function
-        self._embedding_function = None
-
-    def _get_embedding_function(self):
-        """Lazy load embedding function."""
-        if self._embedding_function is None:
-            from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
-            self._embedding_function = OpenAIEmbeddingFunction(
-                api_key=settings.openai_api_key,
-                model_name=settings.embedding_model,
-            )
-        return self._embedding_function
+        self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
 
     async def process_document(self, document_id: int) -> None:
-        """Process a document: parse, chunk, embed, and store."""
+        """Process a document: parse, chunk, embed, and store in Postgres."""
         async with get_db_context() as db:
             # Get document
             result = await db.execute(
@@ -65,18 +42,44 @@ class IngestionService:
                 document.status = "processing"
                 await db.commit()
 
-                # Parse document content
+                # Parse document content from stored bytes or file
                 content = await self._parse_document(document)
 
+                # Store raw text
+                document.raw_text = content
+
                 # Delete existing chunks if reprocessing
-                await self._delete_existing_chunks(db, document_id)
+                await db.execute(
+                    delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
+                )
 
                 # Chunk the content
                 chunks = self._chunk_text(content, document.original_filename)
 
-                # Create embeddings and store in vector DB
-                await self._store_chunks(db, document, chunks)
+                if not chunks:
+                    document.status = "completed"
+                    document.chunk_count = 0
+                    await db.commit()
+                    return
 
+                # Generate embeddings
+                embeddings = await self._generate_embeddings([c["content"] for c in chunks])
+
+                # Store chunks with embeddings
+                db_chunks = []
+                for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                    db_chunk = DocumentChunk(
+                        document_id=document.id,
+                        chunk_index=chunk["chunk_index"],
+                        content=chunk["content"],
+                        start_char=chunk["start_char"],
+                        end_char=chunk["end_char"],
+                        page_number=chunk["page_number"],
+                        embedding=embedding,
+                    )
+                    db_chunks.append(db_chunk)
+
+                db.add_all(db_chunks)
                 document.status = "completed"
                 document.chunk_count = len(chunks)
                 await db.commit()
@@ -90,33 +93,59 @@ class IngestionService:
                 await db.commit()
                 raise
 
+    async def process_document_from_bytes(
+        self,
+        document_id: int,
+        file_bytes: bytes,
+        content_type: str,
+    ) -> None:
+        """Process a document from raw bytes."""
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(Document).where(Document.id == document_id)
+            )
+            document = result.scalar_one_or_none()
+
+            if not document:
+                logger.error(f"Document {document_id} not found")
+                return
+
+            # Store raw file bytes if enabled and under size limit
+            if settings.store_raw_files and len(file_bytes) <= settings.max_file_size_bytes:
+                document.file_bytes = file_bytes
+
+            await db.commit()
+
+        # Now process the document
+        await self.process_document(document_id)
+
     async def _parse_document(self, document: Document) -> str:
-        """Parse document content based on file type."""
-        file_path = Path(document.file_path)
+        """Parse document content from stored bytes or raw_text."""
+        # If we have raw_text already, use it (for reprocessing)
+        if document.raw_text:
+            return document.raw_text
 
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
+        # Parse from stored file_bytes
+        if document.file_bytes:
+            return self._parse_bytes(document.file_bytes, document.content_type)
 
-        content_type = document.content_type
+        raise ValueError("No content available to parse")
 
+    def _parse_bytes(self, file_bytes: bytes, content_type: str) -> str:
+        """Parse content from bytes based on content type."""
         if content_type == "text/plain" or content_type == "text/markdown":
-            return self._parse_text(file_path)
+            return file_bytes.decode("utf-8")
         elif content_type == "application/pdf":
-            return self._parse_pdf(file_path)
+            return self._parse_pdf_bytes(file_bytes)
         else:
             raise ValueError(f"Unsupported content type: {content_type}")
 
-    def _parse_text(self, file_path: Path) -> str:
-        """Parse plain text file."""
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
-
-    def _parse_pdf(self, file_path: Path) -> str:
-        """Parse PDF file."""
+    def _parse_pdf_bytes(self, file_bytes: bytes) -> str:
+        """Parse PDF from bytes."""
         try:
             from pypdf import PdfReader
 
-            reader = PdfReader(file_path)
+            reader = PdfReader(io.BytesIO(file_bytes))
             text_parts = []
 
             for page_num, page in enumerate(reader.pages, 1):
@@ -129,14 +158,13 @@ class IngestionService:
             logger.error(f"PDF parsing error: {e}")
             raise
 
-    def _chunk_text(
-        self,
-        text: str,
-        source_name: str,
-    ) -> list[dict]:
+    def _chunk_text(self, text: str, source_name: str) -> list[dict]:
         """Split text into overlapping chunks."""
         # Clean text
         text = re.sub(r'\s+', ' ', text).strip()
+
+        if not text:
+            return []
 
         chunks = []
         start = 0
@@ -175,91 +203,57 @@ class IngestionService:
 
             # Move start position with overlap
             start = end - self.chunk_overlap
-            if start <= chunks[-1]["start_char"] if chunks else 0:
+            if chunks and start <= chunks[-1]["start_char"]:
                 start = end  # Prevent infinite loop
 
         return chunks
 
-    async def _store_chunks(
-        self,
-        db,
-        document: Document,
-        chunks: list[dict],
-    ) -> None:
-        """Store chunks in database and vector store."""
-        if not chunks:
-            return
+    async def _generate_embeddings(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings using OpenAI API."""
+        if not texts:
+            return []
 
-        # Prepare data for ChromaDB
-        ids = []
-        documents = []
-        metadatas = []
-        db_chunks = []
+        # Process in batches of 100 (OpenAI limit)
+        batch_size = 100
+        all_embeddings = []
 
-        for chunk in chunks:
-            chroma_id = str(uuid.uuid4())
-            ids.append(chroma_id)
-            documents.append(chunk["content"])
-            metadatas.append({
-                "document_id": document.id,
-                "document_name": document.original_filename,
-                "chunk_index": chunk["chunk_index"],
-                "page_number": chunk["page_number"] or -1,
-            })
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
 
-            # Create database record
-            db_chunk = DocumentChunk(
-                document_id=document.id,
-                chunk_index=chunk["chunk_index"],
-                content=chunk["content"],
-                start_char=chunk["start_char"],
-                end_char=chunk["end_char"],
-                page_number=chunk["page_number"],
-                chroma_id=chroma_id,
+            response = await self.openai_client.embeddings.create(
+                model=settings.embedding_model,
+                input=batch,
             )
-            db_chunks.append(db_chunk)
 
-        # Store in ChromaDB with embeddings
-        embedding_fn = self._get_embedding_function()
-        embeddings = embedding_fn(documents)
+            batch_embeddings = [item.embedding for item in response.data]
+            all_embeddings.extend(batch_embeddings)
 
-        self.collection.add(
-            ids=ids,
-            embeddings=embeddings,
-            documents=documents,
-            metadatas=metadatas,
-        )
-
-        # Store in database
-        db.add_all(db_chunks)
-        await db.commit()
-
-    async def _delete_existing_chunks(self, db, document_id: int) -> None:
-        """Delete existing chunks for a document."""
-        # Get existing chunk IDs
-        result = await db.execute(
-            select(DocumentChunk.chroma_id).where(
-                DocumentChunk.document_id == document_id
-            )
-        )
-        chroma_ids = [row[0] for row in result.all()]
-
-        # Delete from ChromaDB
-        if chroma_ids:
-            try:
-                self.collection.delete(ids=chroma_ids)
-            except Exception as e:
-                logger.warning(f"Failed to delete from ChromaDB: {e}")
-
-        # Delete from database
-        await db.execute(
-            DocumentChunk.__table__.delete().where(
-                DocumentChunk.document_id == document_id
-            )
-        )
-        await db.commit()
+        return all_embeddings
 
     async def delete_document_chunks(self, document_id: int) -> None:
         """Delete all chunks for a document."""
         async with get_db_context() as db:
-            await self._delete_existing_chunks(db, document_id)
+            await db.execute(
+                delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
+            )
+            await db.commit()
+
+    async def reprocess_document(self, document_id: int) -> None:
+        """Reprocess a document using stored raw_text or file_bytes."""
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(Document).where(Document.id == document_id)
+            )
+            document = result.scalar_one_or_none()
+
+            if not document:
+                raise ValueError(f"Document {document_id} not found")
+
+            if not document.raw_text and not document.file_bytes:
+                raise ValueError("No stored content available for reprocessing")
+
+            document.status = "pending"
+            document.error_message = None
+            await db.commit()
+
+        await self.process_document(document_id)

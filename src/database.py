@@ -1,13 +1,17 @@
-"""Database setup and session management."""
+"""Database setup and session management for Postgres + pgvector."""
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from sqlalchemy import event
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from src.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -16,17 +20,18 @@ class Base(DeclarativeBase):
     pass
 
 
+# Make Vector type available for models
+VectorType = Vector
+
 settings = get_settings()
 
-# Convert sqlite:/// to sqlite+aiosqlite:///
-database_url = settings.database_url
-if database_url.startswith("sqlite:///"):
-    database_url = database_url.replace("sqlite:///", "sqlite+aiosqlite:///")
-
 engine = create_async_engine(
-    database_url,
+    settings.database_url,
     echo=settings.log_level == "DEBUG",
     future=True,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=10,
 )
 
 async_session_maker = async_sessionmaker(
@@ -37,9 +42,15 @@ async_session_maker = async_sessionmaker(
 
 
 async def init_db() -> None:
-    """Initialize the database, creating all tables."""
+    """Initialize the database, creating pgvector extension and all tables."""
     async with engine.begin() as conn:
+        # Enable pgvector extension
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        logger.info("pgvector extension enabled")
+
+        # Create all tables
         await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables created")
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

@@ -6,21 +6,45 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
       - ./eval_datasets:/app/eval_datasets
       - ./sample_data:/app/sample_data
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=sqlite:///./data/db.sqlite
-      - CHROMA_PERSIST_DIR=./data/chroma
-      - UPLOAD_DIR=./data/uploads
+      - DATABASE_URL=postgresql+asyncpg://ragops:ragops@db:5432/ragops
+      - EMBEDDING_MODEL=text-embedding-3-small
+      - RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
       - LOG_LEVEL=INFO
+      - TOP_K_RETRIEVAL=10
+      - RERANK_TOP_K=5
+      - STORE_RAW_FILES=true
     env_file:
       - .env
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
+
+  db:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=ragops
+      - POSTGRES_PASSWORD=ragops
+      - POSTGRES_DB=ragops
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragops -d ragops"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
