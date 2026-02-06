@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     rerank_top_k: int = 5
 
     # Reranking
+    enable_reranking: bool = True  # Set to False for low-memory environments
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
     # Evaluation Settings

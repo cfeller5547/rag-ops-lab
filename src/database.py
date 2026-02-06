@@ -25,13 +25,25 @@ VectorType = Vector
 
 settings = get_settings()
 
+# Parse database URL and handle SSL for asyncpg
+database_url = settings.database_url
+
+# asyncpg uses 'ssl' instead of 'sslmode', so we need to handle this
+connect_args = {}
+if "sslmode=require" in database_url or "sslmode=prefer" in database_url:
+    # Remove sslmode from URL and add SSL to connect_args
+    database_url = database_url.replace("?sslmode=require", "").replace("&sslmode=require", "")
+    database_url = database_url.replace("?sslmode=prefer", "").replace("&sslmode=prefer", "")
+    connect_args["ssl"] = "require"
+
 engine = create_async_engine(
-    settings.database_url,
+    database_url,
     echo=settings.log_level == "DEBUG",
     future=True,
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
+    connect_args=connect_args,
 )
 
 async_session_maker = async_sessionmaker(
