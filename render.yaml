@@ -1,13 +1,8 @@
-# Render Blueprint for RAGOps Lab
-# https://render.com/docs/blueprint-spec
-
 services:
-  # Main web service
   - type: web
     name: ragops-lab
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: standard  # Needed for sentence-transformers memory requirements
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -15,7 +10,7 @@ services:
           name: ragops-db
           property: connectionString
       - key: OPENAI_API_KEY
-        sync: false  # Set manually in Render dashboard
+        sync: false
       - key: OPENAI_MODEL
         value: gpt-4-turbo-preview
       - key: EMBEDDING_MODEL
@@ -38,10 +33,6 @@ services:
         value: "true"
 
 databases:
-  # PostgreSQL with pgvector extension
   - name: ragops-db
-    plan: standard  # pgvector requires standard plan or higher
     databaseName: ragops
-    postgresMajorVersion: "16"
-    # Note: pgvector extension is enabled automatically on Render Postgres
-    # The app runs CREATE EXTENSION IF NOT EXISTS vector on startup
+    postgresMajorVersion: 16
