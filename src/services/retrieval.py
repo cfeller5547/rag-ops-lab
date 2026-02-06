@@ -92,9 +92,10 @@ class RetrievalService:
         """Perform pgvector similarity search."""
         # Build the query with cosine similarity
         # pgvector uses <=> for cosine distance, so similarity = 1 - distance
-        embedding_str = f"[{','.join(str(x) for x in query_embedding)}]"
+        # Note: We embed the vector directly in SQL since asyncpg has issues with ::vector cast
+        embedding_str = f"'[{','.join(str(x) for x in query_embedding)}]'::vector"
 
-        base_query = """
+        base_query = f"""
             SELECT
                 dc.id as chunk_id,
                 dc.document_id,
@@ -102,25 +103,22 @@ class RetrievalService:
                 dc.content,
                 dc.chunk_index,
                 dc.page_number,
-                1 - (dc.embedding <=> :embedding::vector) as similarity
+                1 - (dc.embedding <=> {embedding_str}) as similarity
             FROM document_chunks dc
             JOIN documents d ON dc.document_id = d.id
             WHERE dc.embedding IS NOT NULL
         """
 
         if document_ids:
-            base_query += " AND dc.document_id = ANY(:doc_ids)"
+            doc_ids_str = ",".join(str(d) for d in document_ids)
+            base_query += f" AND dc.document_id IN ({doc_ids_str})"
 
-        base_query += """
-            ORDER BY dc.embedding <=> :embedding::vector
-            LIMIT :limit
+        base_query += f"""
+            ORDER BY dc.embedding <=> {embedding_str}
+            LIMIT {top_k}
         """
 
-        params = {"embedding": embedding_str, "limit": top_k}
-        if document_ids:
-            params["doc_ids"] = document_ids
-
-        result = await db.execute(text(base_query), params)
+        result = await db.execute(text(base_query))
         rows = result.fetchall()
 
         return [
