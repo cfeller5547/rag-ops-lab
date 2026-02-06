@@ -9,7 +9,7 @@ async def list_datasets() -> list:
     """Fetch available evaluation datasets."""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get("http://localhost:8000/api/evals/datasets")
+            response = await client.get("/api/evals/datasets")
             response.raise_for_status()
 
         datasets = response.json()
@@ -23,7 +23,7 @@ async def refresh_eval_runs() -> pd.DataFrame:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                "http://localhost:8000/api/evals",
+                "/api/evals",
                 params={"page": 1, "page_size": 50},
             )
             response.raise_for_status()
@@ -71,7 +71,7 @@ async def start_eval_run(name: str, dataset: str) -> tuple[str, pd.DataFrame]:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                "http://localhost:8000/api/evals",
+                "/api/evals",
                 json={
                     "name": name.strip(),
                     "dataset_name": dataset,
@@ -98,7 +98,7 @@ async def get_eval_details(eval_id: str) -> str:
         async with httpx.AsyncClient(timeout=30.0) as client:
             # First get list to find full ID
             list_response = await client.get(
-                "http://localhost:8000/api/evals",
+                "/api/evals",
                 params={"page": 1, "page_size": 100},
             )
             list_response.raise_for_status()
@@ -114,7 +114,7 @@ async def get_eval_details(eval_id: str) -> str:
                 return f"Evaluation '{eval_id}' not found"
 
             # Get details
-            response = await client.get(f"http://localhost:8000/api/evals/{full_id}")
+            response = await client.get(f"/api/evals/{full_id}")
             response.raise_for_status()
 
         data = response.json()
@@ -172,7 +172,7 @@ async def delete_eval_run(eval_id: str) -> tuple[str, pd.DataFrame]:
         # Find full ID
         async with httpx.AsyncClient(timeout=30.0) as client:
             list_response = await client.get(
-                "http://localhost:8000/api/evals",
+                "/api/evals",
                 params={"page": 1, "page_size": 100},
             )
             list_response.raise_for_status()
@@ -187,7 +187,7 @@ async def delete_eval_run(eval_id: str) -> tuple[str, pd.DataFrame]:
             if not full_id:
                 return f"Evaluation '{eval_id}' not found", await refresh_eval_runs()
 
-            response = await client.delete(f"http://localhost:8000/api/evals/{full_id}")
+            response = await client.delete(f"/api/evals/{full_id}")
             response.raise_for_status()
 
         return f"Evaluation {eval_id} deleted", await refresh_eval_runs()

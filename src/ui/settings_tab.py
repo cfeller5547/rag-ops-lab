@@ -24,7 +24,7 @@ async def check_api_health() -> str:
     """Check API health status."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get("http://localhost:8000/health")
+            response = await client.get("/health")
             response.raise_for_status()
 
         data = response.json()
@@ -54,21 +54,21 @@ async def get_system_info() -> str:
         async with httpx.AsyncClient(timeout=30.0) as client:
             # Get document stats
             docs_response = await client.get(
-                "http://localhost:8000/api/documents",
+                "/api/documents",
                 params={"page": 1, "page_size": 1000},
             )
             docs_data = docs_response.json()
 
             # Get trace stats
             traces_response = await client.get(
-                "http://localhost:8000/api/traces",
+                "/api/traces",
                 params={"page": 1, "page_size": 1000},
             )
             traces_data = traces_response.json()
 
             # Get eval stats
             evals_response = await client.get(
-                "http://localhost:8000/api/evals",
+                "/api/evals",
                 params={"page": 1, "page_size": 1000},
             )
             evals_data = evals_response.json()

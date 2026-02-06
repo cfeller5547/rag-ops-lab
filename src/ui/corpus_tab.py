@@ -19,7 +19,7 @@ async def upload_document(file) -> str:
             with open(file.name, "rb") as f:
                 files = {"file": (file_path.name, f, content_type)}
                 response = await client.post(
-                    "http://localhost:8000/api/documents",
+                    "/api/documents",
                     files=files,
                 )
                 response.raise_for_status()
@@ -38,7 +38,7 @@ async def refresh_documents() -> pd.DataFrame:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                "http://localhost:8000/api/documents",
+                "/api/documents",
                 params={"page": 1, "page_size": 100},
             )
             response.raise_for_status()
@@ -78,7 +78,7 @@ async def delete_document(doc_id: str) -> tuple[str, pd.DataFrame]:
         doc_id_int = int(doc_id.strip())
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.delete(
-                f"http://localhost:8000/api/documents/{doc_id_int}"
+                f"/api/documents/{doc_id_int}"
             )
             response.raise_for_status()
 
@@ -101,7 +101,7 @@ async def reprocess_document(doc_id: str) -> tuple[str, pd.DataFrame]:
         doc_id_int = int(doc_id.strip())
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                f"http://localhost:8000/api/documents/{doc_id_int}/reprocess"
+                f"/api/documents/{doc_id_int}/reprocess"
             )
             response.raise_for_status()
 
@@ -121,7 +121,7 @@ async def get_corpus_stats() -> str:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                "http://localhost:8000/api/documents",
+                "/api/documents",
                 params={"page": 1, "page_size": 1000},
             )
             response.raise_for_status()
