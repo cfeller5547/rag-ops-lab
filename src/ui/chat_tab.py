@@ -52,7 +52,7 @@ async def send_message(
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                "/api/chat",
+                "http://127.0.0.1:8000/api/chat",
                 json={
                     "message": message,
                     "session_id": session_id,

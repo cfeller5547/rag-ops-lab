@@ -11,7 +11,7 @@ async def refresh_traces() -> pd.DataFrame:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                "/api/traces",
+                "http://127.0.0.1:8000/api/traces",
                 params={"page": 1, "page_size": 50},
             )
             response.raise_for_status()
@@ -52,7 +52,7 @@ async def get_trace_details(run_id: str) -> str:
         # Find full run ID
         async with httpx.AsyncClient(timeout=30.0) as client:
             list_response = await client.get(
-                "/api/traces",
+                "http://127.0.0.1:8000/api/traces",
                 params={"page": 1, "page_size": 100},
             )
             list_response.raise_for_status()
@@ -68,7 +68,7 @@ async def get_trace_details(run_id: str) -> str:
                 return f"Trace for run '{run_id}' not found"
 
             # Get details
-            response = await client.get(f"/api/traces/{full_id}")
+            response = await client.get(f"http://127.0.0.1:8000/api/traces/{full_id}")
             response.raise_for_status()
 
         data = response.json()
@@ -143,7 +143,7 @@ async def delete_trace(run_id: str) -> tuple[str, pd.DataFrame]:
         # Find full run ID
         async with httpx.AsyncClient(timeout=30.0) as client:
             list_response = await client.get(
-                "/api/traces",
+                "http://127.0.0.1:8000/api/traces",
                 params={"page": 1, "page_size": 100},
             )
             list_response.raise_for_status()
@@ -158,7 +158,7 @@ async def delete_trace(run_id: str) -> tuple[str, pd.DataFrame]:
             if not full_id:
                 return f"Trace '{run_id}' not found", await refresh_traces()
 
-            response = await client.delete(f"/api/traces/{full_id}")
+            response = await client.delete(f"http://127.0.0.1:8000/api/traces/{full_id}")
             response.raise_for_status()
 
         return f"Trace {run_id} deleted", await refresh_traces()
@@ -180,7 +180,7 @@ async def filter_traces(session_id: str, event_type: str) -> pd.DataFrame:
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                "/api/traces",
+                "http://127.0.0.1:8000/api/traces",
                 params=params,
             )
             response.raise_for_status()
