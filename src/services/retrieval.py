@@ -40,6 +40,8 @@ class RetrievalService:
 
     def _get_reranker(self):
         """Lazy load the reranker model."""
+        if not settings.enable_reranking:
+            return None
         if self._reranker is None:
             try:
                 from sentence_transformers import CrossEncoder
@@ -236,5 +238,5 @@ class RetrievalService:
                 "total_chunks": chunk_count,
                 "total_documents": doc_count,
                 "embedding_dimensions": settings.embedding_dimensions,
-                "reranking_enabled": self._get_reranker() is not None,
+                "reranking_enabled": settings.enable_reranking,
             }
