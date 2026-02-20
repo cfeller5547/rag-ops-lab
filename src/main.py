@@ -1,17 +1,17 @@
-"""Main FastAPI application with Gradio UI mount."""
+"""Main FastAPI application with React SPA frontend."""
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-import gradio as gr
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.api import api_router
 from src.config import get_settings
 from src.database import init_db
-from src.ui.app import create_gradio_app
 
 # Configure logging
 settings = get_settings()
@@ -91,22 +91,35 @@ async def health_check():
         )
 
 
-@app.get("/")
-async def root():
-    """Root endpoint - redirects to Gradio UI."""
-    return JSONResponse(
-        content={
-            "message": "Welcome to RAGOps Lab",
-            "ui": "/ui",
-            "docs": "/docs",
-            "health": "/health",
-        }
-    )
+# Serve static frontend files
+static_dir = Path(__file__).parent.parent / "static"
+if static_dir.exists() and (static_dir / "index.html").exists():
+    # Mount assets directory for JS/CSS bundles
+    assets_dir = static_dir / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-
-# Mount Gradio app
-gradio_app = create_gradio_app()
-app = gr.mount_gradio_app(app, gradio_app, path="/ui")
+    @app.get("/{path:path}")
+    async def serve_spa(path: str):
+        """Serve the React SPA for all non-API routes."""
+        # Try to serve the exact file first
+        file_path = static_dir / path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+        # Fall back to index.html for client-side routing
+        return FileResponse(str(static_dir / "index.html"))
+else:
+    @app.get("/")
+    async def root():
+        """Root endpoint when no frontend is built."""
+        return JSONResponse(
+            content={
+                "message": "Welcome to RAGOps Lab",
+                "docs": "/docs",
+                "health": "/health",
+                "note": "Frontend not built. Run: cd frontend && npm run build, then copy dist/ to static/",
+            }
+        )
 
 
 if __name__ == "__main__":
