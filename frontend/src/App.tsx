@@ -24,6 +24,7 @@ function App() {
         <Routes>
           <Route element={<AppShell />}>
             <Route path="/" element={<ChatPage />} />
+            <Route path="/chat" element={<Navigate to="/" replace />} />
             <Route path="/corpus" element={<CorpusPage />} />
             <Route path="/evaluations" element={<EvaluationsPage />} />
             <Route path="/evals" element={<Navigate to="/evaluations" replace />} />
