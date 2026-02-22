@@ -1,12 +1,13 @@
 import { useState, useCallback } from "react";
 import { Upload, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useUploadDocument } from "@/hooks/use-documents";
+import { useUploadDocument, useDocuments } from "@/hooks/use-documents";
 import { toast } from "sonner";
 
 export function UploadZone() {
   const [isDragOver, setIsDragOver] = useState(false);
   const upload = useUploadDocument();
+  const { data: docData } = useDocuments();
 
   const handleFile = useCallback(
     (file: File) => {
@@ -22,6 +23,12 @@ export function UploadZone() {
       if (file.size > 10 * 1024 * 1024) {
         toast.error("File too large. Maximum size is 10MB.");
         return;
+      }
+      const existing = docData?.documents.find(
+        (d) => d.original_filename === file.name
+      );
+      if (existing) {
+        toast.warning(`"${file.name}" already exists in your corpus. Uploading a duplicate.`);
       }
       upload.mutate(file, {
         onSuccess: (doc) => {

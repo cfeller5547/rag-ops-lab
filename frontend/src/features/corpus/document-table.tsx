@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { MoreHorizontal, RefreshCw, Trash2 } from "lucide-react";
 import { useDocuments, useDeleteDocument, useReprocessDocument } from "@/hooks/use-documents";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -58,6 +58,14 @@ export function DocumentTable() {
   };
 
   const docs = data?.documents ?? [];
+
+  const duplicateNames = useMemo(() => {
+    const counts: Record<string, number> = {};
+    docs.forEach((d) => {
+      counts[d.original_filename] = (counts[d.original_filename] ?? 0) + 1;
+    });
+    return new Set(Object.keys(counts).filter((n) => counts[n] > 1));
+  }, [docs]);
 
   const handleDelete = async (id: number, name: string) => {
     const confirmed = await confirm({
@@ -137,7 +145,14 @@ export function DocumentTable() {
                 className="border-b border-border transition-colors hover:bg-card/80"
               >
                 <td className="px-4 py-2.5 font-medium text-foreground">
-                  {doc.original_filename}
+                  <div className="flex items-center gap-2">
+                    {doc.original_filename}
+                    {duplicateNames.has(doc.original_filename) && (
+                      <span className="rounded border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-500">
+                        duplicate
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-2.5 text-muted-foreground">
                   {doc.content_type.split("/")[1]?.toUpperCase() ?? doc.content_type}
