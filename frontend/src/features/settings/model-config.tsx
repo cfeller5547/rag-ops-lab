@@ -5,7 +5,7 @@ export function ModelConfig() {
         Model Configuration
       </h3>
       <div className="space-y-3">
-        <ConfigField label="LLM Model" value="gpt-4-turbo-preview" />
+        <ConfigField label="LLM Model" value="gpt-4o" />
         <ConfigField label="Embedding Model" value="text-embedding-3-small" />
         <ConfigField label="Embedding Dimensions" value="1536" />
       </div>
