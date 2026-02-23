@@ -56,9 +56,10 @@ async_session_maker = async_sessionmaker(
 async def init_db() -> None:
     """Initialize the database, creating pgvector extension and all tables."""
     async with engine.begin() as conn:
-        # Enable pgvector extension
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        logger.info("pgvector extension enabled")
+        # Enable pgvector extension (PostgreSQL only)
+        if "sqlite" not in settings.database_url:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            logger.info("pgvector extension enabled")
 
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)
