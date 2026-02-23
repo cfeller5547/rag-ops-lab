@@ -168,7 +168,9 @@ class EvaluationService:
                 response.content, response.citations, case.expected_answer
             )
             schema_compliant = self._check_schema_compliance(response)
-            tool_correct = True  # Simplified for now
+            # Tool is correct if search_corpus was called for a non-refusal response,
+            # or if the response is a refusal (declining without search is also valid).
+            tool_correct = "search_corpus" in response.tools_called or response.is_refusal
 
             # Determine if passed
             passed = (

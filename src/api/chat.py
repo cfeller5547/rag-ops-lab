@@ -51,6 +51,7 @@ async def chat(
             citations=response.citations if request.include_sources else None,
             is_refusal=response.is_refusal,
             refusal_reason=response.refusal_reason,
+            confidence=response.confidence,
         )
 
         # Save trace events

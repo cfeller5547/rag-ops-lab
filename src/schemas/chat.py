@@ -32,6 +32,9 @@ class ChatMessage(BaseModel):
     refusal_reason: Optional[str] = Field(
         None, description="Reason for refusal if applicable"
     )
+    confidence: Optional[str] = Field(
+        None, description="Model confidence: high | medium | low"
+    )
     timestamp: Optional[datetime] = None
 
 

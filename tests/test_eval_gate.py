@@ -135,6 +135,68 @@ class TestEvalGate:
         assert citation.relevance_score == 0.9
 
 
+class TestToolCalling:
+    """Tests for OpenAI tool calling and structured output features."""
+
+    def test_tool_schema_format(self):
+        """TOOLS list has correct OpenAI function calling format."""
+        from src.services.agent import TOOLS
+
+        assert len(TOOLS) >= 2
+        search_tool = next(t for t in TOOLS if t["function"]["name"] == "search_corpus")
+        assert search_tool["type"] == "function"
+        params = search_tool["function"]["parameters"]
+        assert "query" in params["properties"]
+        assert "query" in params["required"]
+        assert params.get("additionalProperties") is False
+
+    def test_tool_correctness_logic(self):
+        """tool_correct is True when search_corpus was called or response is refusal."""
+        # Non-refusal with search_corpus called = correct
+        tools_called = ["search_corpus"]
+        is_refusal = False
+        tool_correct = "search_corpus" in tools_called or is_refusal
+        assert tool_correct is True
+
+        # Refusal without tools = also correct
+        tools_called = []
+        is_refusal = True
+        tool_correct = "search_corpus" in tools_called or is_refusal
+        assert tool_correct is True
+
+        # Non-refusal without search_corpus = incorrect
+        tools_called = []
+        is_refusal = False
+        tool_correct = "search_corpus" in tools_called or is_refusal
+        assert tool_correct is False
+
+    def test_structured_answer_schema(self):
+        """StructuredAnswer Pydantic model validates correctly."""
+        from src.services.agent import StructuredAnswer
+
+        answer = StructuredAnswer(
+            answer="The policy states 15 days PTO [1].",
+            cited_sources=[1],
+            is_refusal=False,
+            confidence="high",
+        )
+        assert answer.confidence in ("high", "medium", "low")
+        assert isinstance(answer.cited_sources, list)
+        assert not answer.is_refusal
+
+    def test_agent_response_has_tools_called_field(self):
+        """AgentResponse dataclass includes tools_called and confidence fields."""
+        from src.services.agent import AgentResponse
+
+        resp = AgentResponse(
+            content="Test answer [1].",
+            confidence="medium",
+            tools_called=["search_corpus"],
+        )
+        assert resp.tools_called == ["search_corpus"]
+        assert resp.confidence == "medium"
+
+
 class TestQualityMetrics:
     """Tests for quality metric calculations."""
 

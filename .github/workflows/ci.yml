@@ -94,7 +94,7 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/ragops_test
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           EMBEDDING_MODEL: text-embedding-3-small
-          OPENAI_MODEL: gpt-4-turbo-preview
+          OPENAI_MODEL: gpt-4o
         run: |
           python -m pytest tests/test_eval_gate.py -v --tb=short
 
