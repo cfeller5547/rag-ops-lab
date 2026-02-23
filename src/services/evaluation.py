@@ -163,7 +163,10 @@ class EvaluationService:
             latency_ms = int((time.time() - start_time) * 1000)
 
             # Compute metrics
-            groundedness = self._compute_groundedness(response.content, response.citations)
+            if response.is_refusal:
+                groundedness = 1.0  # Correct refusal = perfectly grounded
+            else:
+                groundedness = self._compute_groundedness(response.content, response.citations)
             hallucination = self._detect_hallucination(
                 response.content, response.citations, case.expected_answer
             )
@@ -196,30 +199,50 @@ class EvaluationService:
             raise
 
     def _compute_groundedness(self, answer: str, citations: list) -> float:
-        """Compute groundedness score (0-1)."""
+        """Compute groundedness score (0-1) based on citation coverage of claims."""
+        import re
+
         if not answer:
             return 0.0
 
         if not citations:
             return 0.0
 
-        # Simple heuristic: check for citation markers in response
-        citation_markers = ["[1]", "[2]", "[3]", "[4]", "[5]", "[Source"]
-        has_citations = any(marker in answer for marker in citation_markers)
+        # Split into sentences (skip very short fragments under 10 chars)
+        sentences = [
+            s.strip()
+            for s in re.split(r'(?<=[.!?])\s+', answer)
+            if s.strip() and len(s.strip()) > 10
+        ]
 
-        if not has_citations:
-            return 0.2  # Low score if no citations used
+        if not sentences:
+            # Very short answer — check if it has any citation marker
+            if re.search(r'\[\d+\]', answer):
+                return 0.8
+            return 0.3
 
-        # Count sentences and citations
-        sentences = [s.strip() for s in answer.split(".") if s.strip()]
-        citation_count = sum(1 for marker in citation_markers if marker in answer)
+        # Count sentences that contain at least one citation marker [N]
+        citation_pattern = re.compile(r'\[\d+\]')
+        cited_sentences = sum(1 for s in sentences if citation_pattern.search(s))
 
-        # Rough estimate: more citations relative to sentences = higher groundedness
-        if len(sentences) == 0:
-            return 0.5
+        # Recognize transitional/introductory sentences that don't need citations
+        transitional_pattern = re.compile(
+            r'^(here|in summary|based on|according to|overall|to summarize|'
+            r'in conclusion|additionally|furthermore|the following)',
+            re.IGNORECASE,
+        )
+        transitional_count = sum(
+            1 for s in sentences if transitional_pattern.match(s)
+        )
 
-        ratio = min(citation_count / len(sentences), 1.0)
-        return 0.5 + (ratio * 0.5)  # Scale from 0.5 to 1.0
+        # Effective sentences that SHOULD have citations
+        claimable_sentences = max(len(sentences) - transitional_count, 1)
+
+        # Coverage ratio
+        coverage = min(cited_sentences / claimable_sentences, 1.0)
+
+        # Score: 0.4 base (has citations object) + 0.6 scaled by coverage
+        return 0.4 + (coverage * 0.6)
 
     def _detect_hallucination(
         self,

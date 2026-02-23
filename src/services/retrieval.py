@@ -75,6 +75,12 @@ class RetrievalService:
         if not results:
             return []
 
+        # Filter out low-relevance results
+        results = [r for r in results if r.relevance_score >= settings.min_relevance_score]
+
+        if not results:
+            return []
+
         # Rerank if enabled and reranker is available
         if rerank and len(results) > 1:
             reranker = self._get_reranker()

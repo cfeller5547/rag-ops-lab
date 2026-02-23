@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     chunk_overlap: int = 50
     top_k_retrieval: int = 10
     rerank_top_k: int = 5
+    min_relevance_score: float = 0.3
 
     # Reranking
     enable_reranking: bool = True  # Set to False for low-memory environments

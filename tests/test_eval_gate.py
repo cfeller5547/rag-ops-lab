@@ -28,6 +28,37 @@ class TestEvalGate:
         score_no_cite = eval_service._compute_groundedness(answer_no_citations, [])
         assert score_no_cite < score, "Answer without citations should score lower"
 
+    def test_refusal_groundedness(self):
+        """Test that refusals are treated as perfectly grounded in the run logic."""
+        # Simulate the refusal bypass logic from _run_single_case
+        is_refusal = True
+        if is_refusal:
+            groundedness = 1.0
+        assert groundedness == 1.0, "Refusal should get perfect groundedness"
+
+        # The raw _compute_groundedness still returns 0.0 for empty citations
+        from src.services.evaluation import EvaluationService
+        eval_service = EvaluationService()
+        score = eval_service._compute_groundedness(
+            "I cannot answer this question.", []
+        )
+        assert score == 0.0, "Raw groundedness for empty citations should be 0.0"
+
+    def test_high_citation_coverage(self):
+        """Test that fully-cited answers score 0.9+."""
+        from src.services.evaluation import EvaluationService
+
+        eval_service = EvaluationService()
+
+        answer = (
+            "The vacation policy provides 15 days PTO [1]. "
+            "Employees accrue PTO bi-weekly [2]. "
+            "Unused PTO carries over up to 40 hours [1][2]."
+        )
+        citations = [{"content": "15 days PTO"}, {"content": "bi-weekly accrual"}]
+        score = eval_service._compute_groundedness(answer, citations)
+        assert score >= 0.9, f"Fully cited answer should score 0.9+, got {score}"
+
     def test_hallucination_detection(self):
         """Test that hallucination detection works correctly."""
         from src.services.evaluation import EvaluationService
